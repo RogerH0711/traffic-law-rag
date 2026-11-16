@@ -138,6 +138,7 @@ display(pd.DataFrame(summary_rows))
 # 法規的天然單位是「條 → 項 → 款」。本系統的做法：
 # - 每一條是一個基本單位；超過 `CHUNK_MAX_CHARS` 字的長條文（例如第 35 條酒駕，約 2,000 字）依**項**切成數段；單一項就太長時再依**款**切，並在每段重複該項的開頭句，讓款不會脫離語境。
 # - 每段開頭都加上「法規名稱＋條號＋項次」，所以就算只取回第 3 段，LLM 也知道它屬於哪一條。
+# - 條文內每一項、每一款前面標上〔第N項〕〔第N款〕，條文互相引用「第一項第二款」時 LLM 才對得上。
 # - 每段記下全國法規資料庫的單條網址，介面上可以直接點開核對。
 # - 另外把每部法規的「生效內容」（特殊施行日期）做成一段**施行日期說明**。
 
@@ -244,6 +245,24 @@ def group_paragraphs(paragraphs, max_chars):
     return groups
 
 
+def mark_paragraphs(paragraphs):
+    """在每一項開頭標〔第N項〕、每一款標〔第N款〕。實測時 LLM 會把『第一項第二款』對錯款（把毒品的加重規定套到酒駕），
+    標出項款編號後，條文裡互相引用的『第○項第○款』就能直接對照。只有一項的條文不標項。"""
+    out = []
+    for i, para in enumerate(paragraphs, start=1):
+        lines, k = para.split("\n"), 0
+        marked = []
+        for j, ln in enumerate(lines):
+            m = re.match(rf"^([{CN_NUM_CHARS}]+)、", ln)
+            if j > 0 and m:
+                k += 1
+                ln = f"{m.group(0)}〔第{k}款〕{ln[len(m.group(0)):]}"
+            marked.append(ln)
+        head = f"〔第{i}項〕" if len(paragraphs) > 1 else ""
+        out.append(head + "\n".join(marked))
+    return out
+
+
 def clean_effective_text(text):
     """『生效內容』原文有硬換行，把同一點的內容接回同一行。"""
     out = []
@@ -281,7 +300,7 @@ for pcode, full_name, short_name, authority in LAWS:
         if not body or body in {"（刪除）", "(刪除)"}:
             continue
         flno = article_flno(article_no)
-        paragraphs = split_paragraphs(body)
+        paragraphs = mark_paragraphs(split_paragraphs(body))
         groups = group_paragraphs(paragraphs, CHUNK_MAX_CHARS) if len(body) > CHUNK_MAX_CHARS else [("", "\n".join(paragraphs))]
         for para_label, text in groups:
             if len(groups) == 1:
