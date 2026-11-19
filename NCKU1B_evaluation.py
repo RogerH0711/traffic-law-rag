@@ -525,6 +525,54 @@ if len(c_rows):
     display(c_rows[~c_rows["in_scope"].astype(bool)][["key", "category10"]].head(10))
 
 # %% [markdown]
+# ### 3.7 為什麼完整系統沒有贏過向量 RAG？（只用已存的結果，不呼叫 LLM）
+#
+# 前 44 題的結果顯示完整系統（C）的答對率低於單純向量 RAG（B）。假設：1A 的「罰則保證名額」是為「罰多少」這類問題設計的，
+# 但筆試題多在問「應該怎麼做」，硬塞進的處罰條例條文可能把真正相關的安全規則擠出前 K 名。
+# 以下檢查：(1) 兩種設定取回的條文來自哪部法規；(2) 兩者取回的條文重疊多少；(3) 在 B、C 結果不同的題目上，罰則名額是否被觸發。
+
+# %%
+def law_mix(config):
+    laws = Counter(docs_by_id[d]["law_short"] for ids in res[res.config == config]["retrieved"] for d in ids)
+    total = sum(laws.values())
+    return {k: v / total for k, v in laws.items()}
+
+
+mix = pd.DataFrame({CONFIG_NAMES[c]: law_mix(c) for c in ["B", "C"]}).fillna(0)
+display(mix.style.format("{:.0%}"))
+
+rb = res[res.config == "B"].set_index("key")
+rc = res[res.config == "C"].set_index("key")
+both = rb.index.intersection(rc.index)
+jac = [len(set(rb.loc[k, "retrieved"]) & set(rc.loc[k, "retrieved"])) / len(set(rb.loc[k, "retrieved"]) | set(rc.loc[k, "retrieved"]))
+       for k in both]
+print(f"B、C 取回條文的平均重疊（Jaccard）：{np.mean(jac):.2f}")
+
+
+def penalty_share(k):
+    return np.mean([docs_by_id[d]["law_short"] == "處罰條例" for d in rc.loc[k, "retrieved"]])
+
+
+groups = {"B 對 C 錯": wide[(wide.B == 1) & (wide.C == 0)].index,
+          "B 錯 C 對": wide[(wide.B == 0) & (wide.C == 1)].index,
+          "兩者都對": wide[(wide.B == 1) & (wide.C == 1)].index}
+diag = pd.DataFrame([{
+    "情況": g, "題數": len(ks),
+    "罰則名額觸發率": rc.loc[ks, "asks_penalty"].astype(bool).mean() if len(ks) else np.nan,
+    "C 條文中處罰條例占比": np.mean([penalty_share(k) for k in ks]) if len(ks) else np.nan,
+    "B、C 條文重疊": np.mean([jac[list(both).index(k)] for k in ks]) if len(ks) else np.nan,
+} for g, ks in groups.items()])
+display(diag.style.format({"罰則名額觸發率": "{:.0%}", "C 條文中處罰條例占比": "{:.0%}", "B、C 條文重疊": "{:.2f}"}).hide(axis="index"))
+
+cases = []
+for k in groups["B 對 C 錯"][:8]:
+    cases.append({"題目": eligible.set_index("key").loc[k, "question"][:70] + "…",
+                  "C 改寫查詢": "；".join(rc.loc[k, "rewrite_queries"])[:60],
+                  "B 取回": "；".join(t.split(" ", 1)[-1] for t in rb.loc[k, "retrieved_titles"][:3]),
+                  "C 取回": "；".join(t.split(" ", 1)[-1] for t in rc.loc[k, "retrieved_titles"][:3])})
+display(pd.DataFrame(cases))
+
+# %% [markdown]
 # ## 4. 實驗二：檢索品質與語意相似度（全部 1,599 題，不呼叫 LLM）
 #
 # NCKU 學長的範例用 **Question-to-Context（Q→C）** 與 **Answer-to-Context（A→C）** 兩個相似度指標，
