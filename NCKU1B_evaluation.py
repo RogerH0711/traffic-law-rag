@@ -343,11 +343,17 @@ print(f"本次新增 {new_q} 題；目前三種設定都完成的題目：{n_ful
 # %% [markdown]
 # ## 3. 實驗一結果
 #
-# 以下分析只使用**三種設定都完成**的題目（成對資料）。
+# 以下分析只使用**三種設定都完成**的題目（成對資料），並排除題幹寫「此標誌」的看圖題（前處理漏網的 11 題，見下方程式說明）。
 
 # %%
+# 事後發現：少數題目寫「此標誌…」，其實要看圖（題庫 PDF 的標誌圖片），但題幹文字沒有「圖」字而漏網。
+# 為了不改變已固定的抽樣，這些題目照樣作答，只在分析時排除。
+IMAGE_LEAK = r"此標誌"
+LEAK_KEYS = set(eligible[eligible["question"].str.contains(IMAGE_LEAK)]["key"])
 res = pd.DataFrame(done.values())
 res = res[res["key"].isin(sample["key"])]
+print("分析時排除的看圖題：", sorted(set(res["key"]) & LEAK_KEYS))
+res = res[~res["key"].isin(LEAK_KEYS)]
 complete_keys = res.groupby("key")["config"].nunique().loc[lambda s: s == len(CONFIGS)].index
 res = res[res["key"].isin(complete_keys)].copy()
 res["bank_label"] = res["bank"].map({"car": "汽車", "moto": "機車"})
@@ -596,7 +602,7 @@ def split_options(q):
     return stem, opts
 
 
-qs = eligible.reset_index(drop=True)
+qs = eligible[~eligible["key"].isin(LEAK_KEYS)].reset_index(drop=True)
 qs[["stem", "options"]] = qs["question"].apply(lambda s: pd.Series(split_options(s)))
 qs = qs[qs["options"].apply(lambda o: set(o) == {1, 2, 3})].reset_index(drop=True)
 print("可拆出 3 個選項的題目：", len(qs))
