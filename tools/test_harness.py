@@ -8,6 +8,7 @@ import gradio  # import real gradio before faking torch
 torch = types.ModuleType("torch")
 torch.cuda = types.SimpleNamespace(is_available=lambda: False, is_bf16_supported=lambda: False)
 torch.bfloat16, torch.float32 = "bf16", "fp32"
+torch.Tensor = type("Tensor", (), {})
 sys.modules["torch"] = torch
 
 # ---- fake huggingface_hub ----
@@ -36,7 +37,10 @@ ai = types.ModuleType("aisuite")
 class _Comp:
     def create(self, model, messages, **k):
         sys_msg = messages[0]["content"]
-        if "法規檢索助理" in sys_msg:
+        if "應考者" in sys_msg:
+            h = int(hashlib.md5(messages[-1]["content"].encode()).hexdigest(), 16)
+            text = str(1 + h % 3) if h % 5 else "答案：2"
+        elif "法規檢索助理" in sys_msg:
             q = messages[1]["content"]
             if "下雨" in q:
                 text = '{"in_scope": false, "queries": []}'
@@ -48,7 +52,8 @@ class _Comp:
         else:
             text = "純 LLM：罰 3,000 元。"
         LOG.append((sys_msg[:20], text[:60]))
-        return types.SimpleNamespace(choices=[types.SimpleNamespace(message=types.SimpleNamespace(content=text), finish_reason="stop")])
+        usage = types.SimpleNamespace(prompt_tokens=len(str(messages)) // 2, completion_tokens=30, total_tokens=len(str(messages)) // 2 + 30)
+        return types.SimpleNamespace(usage=usage, choices=[types.SimpleNamespace(message=types.SimpleNamespace(content=text), finish_reason="stop")])
 class Client:
     def __init__(self, *a, **k): self.chat = types.SimpleNamespace(completions=_Comp())
 ai.Client = Client
@@ -73,10 +78,12 @@ ns = {"__name__": "__main__"}
 for i, cell in enumerate(nb.cells):
     if cell.cell_type != "code":
         continue
-    src = "\n".join(l for l in cell.source.splitlines() if not l.strip().startswith("%"))
+    src = "\n".join(l for l in cell.source.splitlines() if not l.strip().startswith(("%", "#%", "# %", "!", "# !")))
     print(f"\n######## cell {i} ########")
     exec(compile(src, f"cell{i}", "exec"), ns)
 
+if "ask" not in ns or "NCKU1B" in sys.argv[1]:
+    sys.exit(0)
 # extra checks
 out = ns["ask"]("騎機車邊騎邊講手機會怎樣？")
 print(ns["verification_markdown"](out["verification"]))

@@ -23,6 +23,17 @@ F74146115 資訊118 謝承祐
 
 法規資料會從 [kong0107/mojLawSplitJSON](https://github.com/kong0107/mojLawSplitJSON) 的固定 commit 自動下載（全國法規資料庫 2026-10-30 版）。
 
+## NCKU-1B：效能分析
+
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/RogerH0711/traffic-law-rag/blob/main/NCKU1B_evaluation.ipynb)
+
+用公路局 115 年版汽、機車駕照筆試題庫（1,599 題文字題）評估 1A 系統：
+
+- **實驗一**：分層抽樣 200 題，比較純 LLM／向量 RAG／完整系統的答對率（Wilson CI、Cochran's Q、McNemar＋Holm、bootstrap）
+- **實驗二**：全部題目、不呼叫 LLM，Q→C／A→C 相似度、條文支持正解率、範圍外問題的區辨力（ROC AUC）
+
+Groq 免費額度一天約可跑 50～60 題；結果存在 Google Drive，額度用完隔天重新「全部執行」即可續跑。
+
 ## 檔案
 
 | 檔案 | 說明 |
@@ -30,6 +41,9 @@ F74146115 資訊118 謝承祐
 | `NCKU1A_traffic_law_rag.ipynb` | 繳交用的 Colab notebook |
 | `NCKU1A_traffic_law_rag.py` | 同一份 notebook 的 jupytext 原始檔（方便看 diff） |
 | `tools/build.py` | `.py` → `.ipynb` |
-| `tools/test_harness.py` | 本機測試：用假的 embedding／LLM 跑完整流程 |
+| `tools/test_harness.py` | 本機測試：用假的 embedding／LLM 跑完整流程（1A、1B 皆可） |
+| `NCKU1B_evaluation.ipynb` / `.py` | 1B 評估 notebook |
+| `lawrag_core.py` | 由 `tools/make_core.py` 從 1A notebook 自動抽出的系統核心，1B 直接重用 |
+| `data/question_bank.csv` | 題庫解析結果（`tools/parse_bank.py`、`tools/build_bank.py`；原始 PDF 在 `data/raw/`） |
 
 > ⚖️ 課程原型，回答僅供參考；實際裁罰以處罰機關裁決為準。
