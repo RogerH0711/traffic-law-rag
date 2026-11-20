@@ -196,7 +196,7 @@ def tracked_call(messages, max_tokens=1024, expected_tokens=2000):
                 print("⚠️ 這個 SDK 版本不支援 reasoning_effort，改用預設推理強度。")
                 continue
             if re.search(r"per day|\(TPD\)|\(RPD\)", msg):
-                raise QuotaExhausted(msg[:200]) from None
+                raise QuotaExhausted(msg) from None
             if "429" in msg or "rate" in msg.lower() or "timeout" in msg.lower():
                 time.sleep(_retry_seconds(msg))
                 continue
@@ -335,7 +335,10 @@ with open(RESULT_PATH, "a", encoding="utf-8") as fout:
                 n_full = sum(all((k, c) in done for c in CONFIGS) for k in sample["key"])
                 print(f"  進度 {n_full}/{len(sample)} 題，本次新增 {new_q} 題，經過 {time.time() - started:.0f} 秒")
     except QuotaExhausted as exc:
-        stop_reason = "Groq 今日額度已用完，明天再執行一次即可續跑（" + str(exc)[:80] + "…）"
+        wait = re.search(r"try again in ([\dhms.]+)", str(exc))
+        used = re.search(r"Limit (\d+), Used (\d+)", str(exc))
+        stop_reason = ("Groq 每日額度已用完" + (f"（已用 {used.group(2)}／上限 {used.group(1)} token）" if used else "")
+                       + (f"，約 {wait.group(1)} 後恢復" if wait else "") + "。屆時再「全部執行」即可續跑。")
 
 n_full = sum(all((k, c) in done for c in CONFIGS) for k in sample["key"])
 print(f"本次新增 {new_q} 題；目前三種設定都完成的題目：{n_full}/{len(sample)}。停止原因：{stop_reason}")
