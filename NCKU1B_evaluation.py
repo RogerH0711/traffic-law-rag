@@ -303,14 +303,17 @@ RESULT_PATH = os.path.join(RESULT_DIR, "results.jsonl")
 
 
 def load_results():
-    """合併所有結果檔：repo 的 results/*.jsonl（已上傳的備份）＋ Drive 資料夾裡的所有 *.jsonl（含手動救回的檔案）。"""
+    """合併所有結果檔：repo 的 results/backup_*.jsonl（已上傳的備份）＋ Drive 資料夾裡的所有 *.jsonl（含手動救回的檔案）。
+    同一題同一設定出現多次時，保留**最早**的那一筆（第一次作答），重跑的結果另外放在 rerun/ 給 3.8 節用。"""
     recs = {}
-    paths = sorted(set(glob.glob("results/*.jsonl") + glob.glob(os.path.join(RESULT_DIR, "*.jsonl"))))
+    paths = sorted(set(glob.glob("results/backup_*.jsonl") + glob.glob(os.path.join(RESULT_DIR, "*.jsonl"))))
     for path in paths:
         for line in open(path, encoding="utf-8"):
             if line.strip():
                 r = json.loads(line)
-                recs[(r["key"], r["config"])] = r
+                k = (r["key"], r["config"])
+                if k not in recs or r["time"] < recs[k]["time"]:
+                    recs[k] = r
     print("讀入的結果檔：", paths)
     return recs
 
@@ -322,24 +325,48 @@ print("結果檔：", RESULT_PATH, "／已完成", len(done), "筆（題目×設
 # ### 執行（可中斷、可續跑）
 #
 # - 逐題執行 A → B → C，三種設定都完成才換下一題（確保每題都是成對比較）。
-# - 免費額度用完會印出提示並停止，**不會出錯中斷後面的分析格子**。
+# - 免費額度用完會印出**恢復的時間**並停止，不會出錯中斷後面的分析格子；若恢復時間在 `AUTO_WAIT_MINUTES` 分鐘內，會自動等待後繼續。
 # - `MAX_NEW_QUESTIONS` 可以限制這次最多跑幾題（例如錄影時設 3 題示範）。
 
 # %%
 MAX_NEW_QUESTIONS = None      # None = 跑到額度用完或全部完成
+AUTO_WAIT_MINUTES = 20        # 額度用完時，若 Groq 說的恢復時間在這之內，就自動等待後繼續；設 0 則直接停止
 CONFIGS = ["A", "B", "C"]
 CONFIG_NAMES = {"A": "A 純 LLM", "B": "B 向量 RAG", "C": "C 完整系統"}
 
-started, new_q, stop_reason = time.time(), 0, "全部完成"
-with open(RESULT_PATH, "a", encoding="utf-8") as fout:
-    try:
+def parse_wait(msg):
+    """把 Groq 錯誤訊息的『try again in 1h2m3.4s』換成秒數；找不到回傳 None。"""
+    m = re.search(r"try again in ((?:\d+h)?(?:\d+m)?(?:[\d.]+s)?)", msg)
+    if not m or not m.group(1):
+        return None
+    parts = {unit: float(num) for num, unit in re.findall(r"([\d.]+)([hms])", m.group(1))}
+    return parts.get("h", 0) * 3600 + parts.get("m", 0) * 60 + parts.get("s", 0)
+
+
+def quota_message(msg):
+    wait = parse_wait(msg)
+    used = re.search(r"Limit (\d+), Used (\d+)", msg)
+    text = "Groq 每日額度已用完"
+    if used:
+        text += f"（已用 {int(used.group(2)):,}／上限 {int(used.group(1)):,} token）"
+    if wait is not None:
+        back = datetime.now(TZ) + pd.Timedelta(seconds=wait)
+        left = f"{wait / 60:.0f} 分鐘後" if wait >= 60 else "不到 1 分鐘"
+        text += f"，約 {back:%m/%d %H:%M}（{left}）恢復"
+    text += ("。註：Groq 的每日額度是「過去 24 小時」滾動計算，恢復時只會釋出 24 小時前用掉的那一部分；"
+             "要有完整額度，請在上次大量執行的 24 小時後再跑。")
+    return text, wait
+
+
+def run_pending():
+    global new_q
+    with open(RESULT_PATH, "a", encoding="utf-8") as fout:
         for _, row in sample.iterrows():
             todo = [c for c in CONFIGS if (row["key"], c) not in done]
             if not todo:
                 continue
             if MAX_NEW_QUESTIONS is not None and new_q >= MAX_NEW_QUESTIONS:
-                stop_reason = f"已達 MAX_NEW_QUESTIONS={MAX_NEW_QUESTIONS}"
-                break
+                return f"已達 MAX_NEW_QUESTIONS={MAX_NEW_QUESTIONS}"
             for c in todo:
                 rec = run_config(row, c)
                 done[(row["key"], c)] = rec
@@ -349,11 +376,22 @@ with open(RESULT_PATH, "a", encoding="utf-8") as fout:
             if new_q % 5 == 0:
                 n_full = sum(all((k, c) in done for c in CONFIGS) for k in sample["key"])
                 print(f"  進度 {n_full}/{len(sample)} 題，本次新增 {new_q} 題，經過 {time.time() - started:.0f} 秒")
+    return "全部完成"
+
+
+started, new_q = time.time(), 0
+while True:
+    try:
+        stop_reason = run_pending()
+        break
     except QuotaExhausted as exc:
-        wait = re.search(r"try again in ([\dhms.]+)", str(exc))
-        used = re.search(r"Limit (\d+), Used (\d+)", str(exc))
-        stop_reason = ("Groq 每日額度已用完" + (f"（已用 {used.group(2)}／上限 {used.group(1)} token）" if used else "")
-                       + (f"，約 {wait.group(1)} 後恢復" if wait else "") + "。屆時再「全部執行」即可續跑。")
+        stop_reason, wait = quota_message(str(exc))
+        if wait is not None and wait <= AUTO_WAIT_MINUTES * 60:
+            print(f"⏳ {stop_reason}\n   在 {AUTO_WAIT_MINUTES} 分鐘內，先自動等待 {wait / 60:.1f} 分鐘再繼續…")
+            time.sleep(wait + 5)
+            continue
+        stop_reason += "　屆時再「全部執行」即可續跑。"
+        break
 
 n_full = sum(all((k, c) in done for c in CONFIGS) for k in sample["key"])
 print(f"本次新增 {new_q} 題；目前三種設定都完成的題目：{n_full}/{len(sample)}。停止原因：{stop_reason}")

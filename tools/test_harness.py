@@ -1,3 +1,4 @@
+import os
 """本機測試：用假的 embedding / LLM / colab 模組跑完整 notebook（gradio 不 launch）。"""
 import sys, types, re, json, hashlib
 import numpy as np
@@ -35,7 +36,15 @@ sys.modules["sentence_transformers"] = st
 LOG = []
 ai = types.ModuleType("aisuite")
 class _Comp:
+    calls = 0
     def create(self, model, messages, **k):
+        # 模擬每日額度用完：NCKU1B_FAKE_TPD="呼叫次數:等待字串,..."，例如 "30:3s,60:11m57.9s"
+        _Comp.calls += 1
+        for spec in filter(None, os.environ.get("NCKU1B_FAKE_TPD", "").split(",")):
+            n, wait = spec.split(":")
+            if _Comp.calls == int(n):
+                raise RuntimeError("Error code: 429 - Rate limit reached for model `openai/gpt-oss-120b` on tokens per day (TPD): "
+                                   f"Limit 200000, Used 199701, Requested 2300. Please try again in {wait}. Need more tokens?")
         sys_msg = messages[0]["content"]
         if "應考者" in sys_msg:
             h = int(hashlib.md5(messages[-1]["content"].encode()).hexdigest(), 16)
