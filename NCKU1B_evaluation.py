@@ -597,6 +597,36 @@ for k in groups["B 對 C 錯"][:8]:
 display(pd.DataFrame(cases))
 
 # %% [markdown]
+# ### 3.8 再現性：同一題重跑一次，答案會一樣嗎？
+#
+# 11/22 因為 Google Drive 沒掛上，Notebook 把前 30 題重跑了一次（結果另存於 `results/rerun/`，不計入上面的分析）。
+# 這意外提供了一組「同題、同設定、隔三天重跑」的資料，可以檢查：溫度 0 的 LLM 答案是否穩定？完整系統的 LLM 改寫會不會每次不同？
+
+# %%
+rerun = {}
+for path in sorted(glob.glob("results/rerun/*.jsonl") + glob.glob(os.path.join(RESULT_DIR, "rerun", "*.jsonl"))):
+    for line in open(path, encoding="utf-8"):
+        if line.strip():
+            r = json.loads(line)
+            rerun[(r["key"], r["config"])] = r
+first = {(r["key"], r["config"]): r for r in res.to_dict("records")}
+common = sorted(set(rerun) & set(first))
+if common:
+    rows = []
+    for c in CONFIGS:
+        ks = [k for k in common if k[1] == c]
+        rows.append({
+            "設定": CONFIG_NAMES[c], "重跑題數": len(ks),
+            "答案一致率": np.mean([first[k]["pred"] == rerun[k]["pred"] for k in ks]),
+            "取回條文完全相同": np.mean([first[k]["retrieved"] == rerun[k]["retrieved"] for k in ks]) if c != "A" else np.nan,
+            "第一次答對": sum(first[k]["correct"] for k in ks), "重跑答對": sum(rerun[k]["correct"] for k in ks),
+        })
+    display(pd.DataFrame(rows).style.format({"答案一致率": "{:.0%}", "取回條文完全相同": "{:.0%}"}, na_rep="—").hide(axis="index"))
+    print("C 的取回條文會變，是因為第一步的 LLM 改寫查詢每次不完全相同（即使溫度為 0）；B 只用固定的向量檢索，所以每次一樣。")
+else:
+    print("沒有重跑資料。")
+
+# %% [markdown]
 # ## 4. 實驗二：檢索品質與語意相似度（全部 1,599 題，不呼叫 LLM）
 #
 # NCKU 學長的範例用 **Question-to-Context（Q→C）** 與 **Answer-to-Context（A→C）** 兩個相似度指標，
