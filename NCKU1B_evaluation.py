@@ -276,27 +276,42 @@ def run_config(row, config):
 # ### 結果存放位置
 #
 # 結果以 JSON Lines 存到 Google Drive（`MyDrive/ncku1b/results.jsonl`），Colab 斷線或隔天重開都不會遺失。
-# 若 repo 裡已有 `results/results.jsonl`（之前跑完後上傳的），會先合併進來。
+# **Drive 沒掛上就會停止**（不會偷偷改存到會消失的暫存區）。
+# 讀取時會合併 repo 的 `results/*.jsonl`（已上傳的備份）與 Drive 資料夾裡所有 `*.jsonl`（包含手動救回的檔案）。
 
 # %%
+import glob
+
 try:
-    from google.colab import drive
-    drive.mount("/content/drive", force_remount=False)
+    from google.colab import drive                     # 在 Colab：一定要掛上 Google Drive
+except ImportError:                                    # 不在 Colab（本機測試）：存在 repo 的 results/
+    drive = None
+if drive is not None:
+    try:
+        drive.mount("/content/drive")
+    except Exception:
+        raise RuntimeError(
+            "Google Drive 掛載失敗（可能是授權視窗沒有按「允許」或逾時）。\n"
+            "為了避免結果存到 Colab 關閉後就消失的暫存區、白白用掉 Groq 額度，這裡先停止。\n"
+            "請重新執行這一格，在跳出的視窗登入並按允許，再從下一格繼續（執行階段 → 執行這個儲存格之後的儲存格）。"
+        ) from None
     RESULT_DIR = "/content/drive/MyDrive/ncku1b"
-except Exception:
+else:
     RESULT_DIR = "results"
 os.makedirs(RESULT_DIR, exist_ok=True)
 RESULT_PATH = os.path.join(RESULT_DIR, "results.jsonl")
 
 
 def load_results():
+    """合併所有結果檔：repo 的 results/*.jsonl（已上傳的備份）＋ Drive 資料夾裡的所有 *.jsonl（含手動救回的檔案）。"""
     recs = {}
-    for path in ["results/results.jsonl", RESULT_PATH]:
-        if os.path.exists(path):
-            for line in open(path, encoding="utf-8"):
-                if line.strip():
-                    r = json.loads(line)
-                    recs[(r["key"], r["config"])] = r
+    paths = sorted(set(glob.glob("results/*.jsonl") + glob.glob(os.path.join(RESULT_DIR, "*.jsonl"))))
+    for path in paths:
+        for line in open(path, encoding="utf-8"):
+            if line.strip():
+                r = json.loads(line)
+                recs[(r["key"], r["config"])] = r
+    print("讀入的結果檔：", paths)
     return recs
 
 
