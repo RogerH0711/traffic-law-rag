@@ -325,12 +325,15 @@ print("結果檔：", RESULT_PATH, "／已完成", len(done), "筆（題目×設
 # ### 執行（可中斷、可續跑）
 #
 # - 逐題執行 A → B → C，三種設定都完成才換下一題（確保每題都是成對比較）。
-# - 免費額度用完會印出**恢復的時間**並停止，不會出錯中斷後面的分析格子；若恢復時間在 `AUTO_WAIT_MINUTES` 分鐘內，會自動等待後繼續。
+# - 免費額度用完會印出**恢復的時間**並停止，不會出錯中斷後面的分析格子；若恢復時間在 `AUTO_WAIT_MINUTES` 分鐘內，會自動等待後繼續，但**每次執行最多自動等待 `MAX_AUTO_WAITS` 次**。
+#   （額度是 24 小時滾動計算，短暫等待通常只釋出幾百 token、不夠跑一題，一直小額等待只會讓 Colab 的 GPU 空轉。）
+# - 停止時會依結果檔裡的作答時間與 token 用量，估計**何時會釋出約一半額度**，建議那之後再回來跑。
 # - `MAX_NEW_QUESTIONS` 可以限制這次最多跑幾題（例如錄影時設 3 題示範）。
 
 # %%
 MAX_NEW_QUESTIONS = None      # None = 跑到額度用完或全部完成
 AUTO_WAIT_MINUTES = 20        # 額度用完時，若 Groq 說的恢復時間在這之內，就自動等待後繼續；設 0 則直接停止
+MAX_AUTO_WAITS = 1            # 每次執行最多自動等待幾次；超過就停止，避免 Colab GPU 長時間空等
 CONFIGS = ["A", "B", "C"]
 CONFIG_NAMES = {"A": "A 純 LLM", "B": "B 向量 RAG", "C": "C 完整系統"}
 
@@ -358,6 +361,37 @@ def quota_message(msg):
     return text, wait
 
 
+def usage_records():
+    """讀出所有結果檔（含 rerun/）每一筆的 (作答時間, token 數)，同一筆只算一次。"""
+    seen = {}
+    paths = set(glob.glob("results/**/*.jsonl", recursive=True) + glob.glob(os.path.join(RESULT_DIR, "*.jsonl")))
+    for path in paths:
+        for line in open(path, encoding="utf-8"):
+            if line.strip():
+                r = json.loads(line)
+                seen[(r["key"], r["config"], r["time"])] = r.get("total_tokens") or 0
+    return sorted((pd.Timestamp(t), n) for (_, _, t), n in seen.items())
+
+
+def comeback_advice():
+    """依本機紀錄估計：過去 24 小時用掉的 token 何時會釋出一半、何時全部釋出。"""
+    now = pd.Timestamp(datetime.now(TZ))
+    window = [(t, n) for t, n in usage_records() if t > now - pd.Timedelta(hours=24)]
+    total = sum(n for _, n in window)
+    if not total:
+        return ""
+    acc, half_at = 0, None
+    for t, n in window:
+        acc += n
+        if acc >= total / 2:
+            half_at = t + pd.Timedelta(hours=24)
+            break
+    full_at = window[-1][0] + pd.Timedelta(hours=24)
+    return (f"\n👉 建議回來的時間（依結果檔估算，Groq 實際計算方式可能略有差異）："
+            f"約 {half_at:%m/%d %H:%M} 之後會釋出約一半額度（大約 {total / 2 / 5000:.0f} 題），"
+            f"{full_at:%m/%d %H:%M} 之後完全恢復。")
+
+
 def run_pending():
     global new_q
     with open(RESULT_PATH, "a", encoding="utf-8") as fout:
@@ -379,18 +413,23 @@ def run_pending():
     return "全部完成"
 
 
-started, new_q = time.time(), 0
+started, new_q, auto_waits = time.time(), 0, 0
 while True:
     try:
         stop_reason = run_pending()
         break
     except QuotaExhausted as exc:
         stop_reason, wait = quota_message(str(exc))
-        if wait is not None and wait <= AUTO_WAIT_MINUTES * 60:
-            print(f"⏳ {stop_reason}\n   在 {AUTO_WAIT_MINUTES} 分鐘內，先自動等待 {wait / 60:.1f} 分鐘再繼續…")
+        if wait is not None and wait <= AUTO_WAIT_MINUTES * 60 and auto_waits < MAX_AUTO_WAITS:
+            auto_waits += 1
+            print(f"⏳ {stop_reason}\n   在 {AUTO_WAIT_MINUTES} 分鐘內，先自動等待 {wait / 60:.1f} 分鐘再繼續"
+                  f"（第 {auto_waits}/{MAX_AUTO_WAITS} 次自動等待）…")
             time.sleep(wait + 5)
             continue
-        stop_reason += "　屆時再「全部執行」即可續跑。"
+        if auto_waits >= MAX_AUTO_WAITS and wait is not None and wait <= AUTO_WAIT_MINUTES * 60:
+            stop_reason += f"　已自動等待 {auto_waits} 次，再等只會小額釋出、讓 GPU 空轉，所以先停止。"
+        stop_reason += "　屆時再「全部執行」即可續跑。" + comeback_advice()
+        stop_reason += "\n   這一格之後的分析仍會照常執行；跑完後可以「執行階段 → 中斷連線並刪除執行階段」釋放 GPU。"
         break
 
 n_full = sum(all((k, c) in done for c in CONFIGS) for k in sample["key"])
